@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Menu Fake GPS
 // @namespace    https://github.com/defffis/FakeGPS_Tampermonkey
-// @version      1.0.4
+// @version      1.0.5
 // @license      AGPLv3
 // @author       defffis
 // @description  Falsify GPS location to protect privacy, or to provide a virtual location sensor device. This script should either be be configured for specific sites only, or for all sites but excludes some specific sites.
@@ -135,7 +135,43 @@ function removeCurrentSiteFromStorage() {
 
   // Список готовых пресетов геопозиций
   var presets = {
-    "Минск Мир": {
+      "Минск Песочница": {
+      latitude: 53.915523,
+      longitude: 27.568876,
+      accuracy: 0.000001,
+      altitude: 214,
+      altitudeAccuracy: 1,
+      heading: 135,
+      speed: 0
+    },
+      "Минск Троицкого/Сторожовская": {
+      latitude: 53.91172,
+      longitude: 27.55664,
+      accuracy: 0.000001,
+      altitude: 214,
+      altitudeAccuracy: 1,
+      heading: 135,
+      speed: 0
+    },
+      "Минск Галерея": {
+      latitude: 53.90851,
+      longitude: 27.54856,
+      accuracy: 0.000001,
+      altitude: 214,
+      altitudeAccuracy: 1,
+      heading: 135,
+      speed: 0
+    },
+      "Минск Мир": {
+      latitude: 53.86920,
+      longitude: 27.53554,
+      accuracy: 0.000001,
+      altitude: 214,
+      altitudeAccuracy: 1,
+      heading: 135,
+      speed: 0
+    },
+    "Минск Мир 2": {
       latitude: 53.867464,
       longitude: 27.541219,
       accuracy: 0.000001,
