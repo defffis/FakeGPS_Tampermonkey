@@ -5,7 +5,7 @@
 // @license      AGPLv3
 // @author       defffis
 // @description  Falsify GPS location to protect privacy, or to provide a virtual location sensor device. This script should either be be configured for specific sites only, or for all sites but excludes some specific sites.
-// @downloadURL  https://raw.githubusercontent.com/defffis/=
+// @downloadURL  https://raw.githubusercontent.com/defffis/FakeGPS_Tampermonkey/mobile-main/Menu%20Fake%20GPS.js
 // @match        *://*/*
 // @match        *://*
 // @exclude      *://www.report-real-gps.com/*
