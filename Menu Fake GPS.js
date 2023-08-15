@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Menu Fake GPS
 // @namespace    https://github.com/defffis/FakeGPS_Tampermonkey
-// @version      1.1.0
+// @version      1.1.5
 // @license      AGPLv3
 // @author       defffis
 // @description  Falsify GPS location to protect privacy, or to provide a virtual location sensor device. This script should either be be configured for specific sites only, or for all sites but excludes some specific sites.
