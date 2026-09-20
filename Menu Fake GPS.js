@@ -34,17 +34,6 @@
     maxLongitude: 30.630999
   });
 
-  // Locations that existed as hard-coded menu presets in v1.x.
-  // They are used only once to remove legacy saved preset values.
-  const LEGACY_PRESET_POINTS = Object.freeze([
-    [53.915525, 27.568870],
-    [53.912972, 27.555453],
-    [53.908512, 27.548552],
-    [53.869199, 27.535535],
-    [53.867464, 27.541219],
-    [53.923994, 27.624810]
-  ]);
-
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
   const pageNavigator = pageWindow.navigator;
   const currentDomain = pageWindow.location.hostname;
@@ -74,29 +63,20 @@
   }
 
   function isValidLocation(location) {
-    return Boolean(
-      location &&
-      isFiniteNumber(Number(location.latitude)) &&
-      isFiniteNumber(Number(location.longitude)) &&
-      Number(location.latitude) >= -90 &&
-      Number(location.latitude) <= 90 &&
-      Number(location.longitude) >= -180 &&
-      Number(location.longitude) <= 180
-    );
-  }
-
-  function isLegacyPresetLocation(location) {
-    if (!isValidLocation(location)) {
+    if (!location) {
       return false;
     }
 
-    const latitude = Number(location.latitude);
-    const longitude = Number(location.longitude);
-    const epsilon = 0.000001;
+    const latitude = toNullableNumber(location.latitude);
+    const longitude = toNullableNumber(location.longitude);
 
-    return LEGACY_PRESET_POINTS.some(([presetLatitude, presetLongitude]) =>
-      Math.abs(latitude - presetLatitude) < epsilon &&
-      Math.abs(longitude - presetLongitude) < epsilon
+    return Boolean(
+      latitude !== null &&
+      longitude !== null &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180
     );
   }
 
@@ -151,22 +131,8 @@
       settings[domain] = { mode: 'real' };
     }
 
-    // Preserve non-preset custom coordinates only.
-    // Old Minsk/ЖК preset coordinates are intentionally discarded.
-    for (const domain of legacyMatches) {
-      if (settings[domain]?.mode === 'real') {
-        continue;
-      }
-
-      const legacyLocation = GM_getValue(domain, null);
-
-      if (isValidLocation(legacyLocation) && !isLegacyPresetLocation(legacyLocation)) {
-        settings[domain] = {
-          mode: 'fixed',
-          location: normalizeLocation(legacyLocation)
-        };
-      }
-    }
+    // v1.x only offered hard-coded fake-location presets.
+    // Do not migrate them: all saved fake points from the old version are discarded.
 
     // Remove all v1.x per-domain values and obsolete lists.
     for (const domain of legacyDomains) {
