@@ -1,271 +1,435 @@
 // ==UserScript==
 // @name         Menu Fake GPS
 // @namespace    https://github.com/defffis/FakeGPS_Tampermonkey
-// @version      1.1.5
+// @version      2.0.0
 // @license      AGPLv3
 // @author       defffis
-// @description  Falsify GPS location to protect privacy, or to provide a virtual location sensor device. This script should either be be configured for specific sites only, or for all sites but excludes some specific sites.
+// @description  Per-site geolocation override: real GPS, stable random coordinates, or manually specified coordinates.
+// @homepageURL  https://github.com/defffis/FakeGPS_Tampermonkey
+// @supportURL   https://github.com/defffis/FakeGPS_Tampermonkey/issues
 // @downloadURL  https://raw.githubusercontent.com/defffis/FakeGPS_Tampermonkey/main/Menu%20Fake%20GPS.js
+// @updateURL    https://raw.githubusercontent.com/defffis/FakeGPS_Tampermonkey/main/Menu%20Fake%20GPS.js
 // @match        *://*/*
-// @match        *://*
 // @exclude      *://www.report-real-gps.com/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
   'use strict';
 
-  // Функция для получения домена из URL
-  function getDomainFromUrl(url) {
-    let hostname;
-    // Находим и удаляем протокол (http, https) из URL
-    if (url.indexOf("://") > -1) {
-      hostname = url.split('/')[2];
-    } else {
-      hostname = url.split('/')[0];
-    }
-    // Удаляем порт из домена (если есть)
-    hostname = hostname.split(':')[0];
-    return hostname;
+  const STORAGE_KEY = 'fakeGpsSettingsV2';
+  const MIGRATION_KEY = 'fakeGpsMigratedToV2';
+
+  // Keep the old random area for backwards-compatible behaviour,
+  // but use realistic browser geolocation metadata.
+  const RANDOM_BOUNDS = Object.freeze({
+    minLatitude: 45.000001,
+    maxLatitude: 53.999999,
+    minLongitude: 2.000000,
+    maxLongitude: 30.630999
+  });
+
+  // Locations that existed as hard-coded menu presets in v1.x.
+  // They are used only once to remove legacy saved preset values.
+  const LEGACY_PRESET_POINTS = Object.freeze([
+    [53.915525, 27.568870],
+    [53.912972, 27.555453],
+    [53.908512, 27.548552],
+    [53.869199, 27.535535],
+    [53.867464, 27.541219],
+    [53.923994, 27.624810]
+  ]);
+
+  const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  const pageNavigator = pageWindow.navigator;
+  const currentDomain = pageWindow.location.hostname;
+
+  function readSettings() {
+    const value = GM_getValue(STORAGE_KEY, {});
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
 
-  // Функция для генерации случайного местоположения
-  function generateRandomLocation() {
+  function writeSettings(settings) {
+    GM_setValue(STORAGE_KEY, settings);
+  }
+
+  function splitLegacyDomains(value) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      return [];
+    }
+
+    return value
+      .split(',')
+      .map(domain => domain.trim())
+      .filter(Boolean);
+  }
+
+  function isFiniteNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value);
+  }
+
+  function isValidLocation(location) {
+    return Boolean(
+      location &&
+      isFiniteNumber(Number(location.latitude)) &&
+      isFiniteNumber(Number(location.longitude)) &&
+      Number(location.latitude) >= -90 &&
+      Number(location.latitude) <= 90 &&
+      Number(location.longitude) >= -180 &&
+      Number(location.longitude) <= 180
+    );
+  }
+
+  function isLegacyPresetLocation(location) {
+    if (!isValidLocation(location)) {
+      return false;
+    }
+
+    const latitude = Number(location.latitude);
+    const longitude = Number(location.longitude);
+    const epsilon = 0.000001;
+
+    return LEGACY_PRESET_POINTS.some(([presetLatitude, presetLongitude]) =>
+      Math.abs(latitude - presetLatitude) < epsilon &&
+      Math.abs(longitude - presetLongitude) < epsilon
+    );
+  }
+
+  function normalizeLocation(location) {
+    const accuracy = Number(location.accuracy);
+
     return {
-      latitude: Math.random() * (53.999999 - 45.000001) + 45.000001,
-    longitude: Math.random() * (30.630999 - 2.000000) + 2.000000,
-    accuracy: Math.random() * (0.170001 - 0.070001) + 0.070001,
-    altitude: Math.floor(Math.random() * (250 - 180 + 1)) + 180,
-    altitudeAccuracy: 1,
-    heading: Math.random() * 360,
-    speed: Math.random() * 56
+      latitude: Number(location.latitude),
+      longitude: Number(location.longitude),
+      accuracy: Number.isFinite(accuracy) && accuracy > 0 ? Math.max(1, accuracy) : 20,
+      altitude: Number.isFinite(Number(location.altitude)) ? Number(location.altitude) : null,
+      altitudeAccuracy:
+        Number.isFinite(Number(location.altitudeAccuracy)) && location.altitude !== null
+          ? Math.max(0, Number(location.altitudeAccuracy))
+          : null,
+      heading:
+        Number.isFinite(Number(location.heading))
+          ? ((Number(location.heading) % 360) + 360) % 360
+          : null,
+      speed:
+        Number.isFinite(Number(location.speed)) && Number(location.speed) >= 0
+          ? Number(location.speed)
+          : null
     };
   }
 
-  // Проверяем, нужно ли выполнять скрипт на текущем сайте
-  function checkMatch() {
-    let currentPageUrl = window.location.href;
-    let currentPageDomain = getDomainFromUrl(currentPageUrl);
-    let existingMatch = GM_getValue('myScriptMatch', '');
+  function migrateLegacyStorage() {
+    if (GM_getValue(MIGRATION_KEY, false)) {
+      return;
+    }
 
-    if (existingMatch.includes(currentPageDomain)) {
-      // Выполняем скрипт только на сайтах, добавленных в match
+    const settings = readSettings();
+    const legacyMatches = splitLegacyDomains(GM_getValue('myScriptMatch', ''));
+    const legacyExclusions = splitLegacyDomains(GM_getValue('myScriptExclusions', ''));
+    const legacyDomains = new Set([...legacyMatches, ...legacyExclusions]);
 
-      // Получаем сохраненные координаты для текущего сайта
-      let savedLocation = GM_getValue(currentPageDomain, null);
+    // Preserve sites where the user explicitly requested real geolocation.
+    for (const domain of legacyExclusions) {
+      settings[domain] = { mode: 'real' };
+    }
 
-      // Если для текущего сайта есть сохраненные координаты, используем их
-      if (savedLocation !== null) {
-        setMockLocation(savedLocation);
-      } else {
-        // Иначе используем случайное местоположение по умолчанию
-        setMockLocation(generateRandomLocation());
+    // Preserve non-preset custom coordinates only.
+    // Old Minsk/ЖК preset coordinates are intentionally discarded.
+    for (const domain of legacyMatches) {
+      if (settings[domain]?.mode === 'real') {
+        continue;
       }
 
-      // Вместо этого места можно разместить ваш код для выполнения на этих сайтах
-      console.log('Скрипт выполняется на сайте: ' + currentPageDomain);
-    } else {
-      // Если сайт нигде не добавлен, используем случайное местоположение по умолчанию
-      setMockLocation(generateRandomLocation());
+      const legacyLocation = GM_getValue(domain, null);
+
+      if (isValidLocation(legacyLocation) && !isLegacyPresetLocation(legacyLocation)) {
+        settings[domain] = {
+          mode: 'fixed',
+          location: normalizeLocation(legacyLocation)
+        };
+      }
     }
+
+    // Remove all v1.x per-domain values and obsolete lists.
+    for (const domain of legacyDomains) {
+      GM_deleteValue(domain);
+    }
+
+    GM_deleteValue('myScriptMatch');
+    GM_deleteValue('myScriptExclusions');
+
+    writeSettings(settings);
+    GM_setValue(MIGRATION_KEY, true);
   }
 
-  // Функция для установки фиктивного местоположения
-  function setMockLocation(location) {
-    // Проверяем, присутствует ли текущий домен в списке исключений
-    let currentPageUrl = window.location.href;
-    let currentPageDomain = getDomainFromUrl(currentPageUrl);
-    let exclusions = GM_getValue('myScriptExclusions', '');
+  function randomBetween(min, max) {
+    return Math.random() * (max - min) + min;
+  }
 
-    if (!exclusions.includes(currentPageDomain)) {
-      // Create a mock geolocation object
-      const mockGeolocation = {
-        getCurrentPosition: function(succ, err) {
-          setTimeout(() => {
-            let coords = {
-              latitude: location.latitude,
-              longitude: location.longitude,
-              accuracy: location.accuracy,
-              altitude: location.altitude,
-              altitudeAccuracy: location.altitudeAccuracy,
-              heading: location.heading,
-              speed: location.speed
-            };
-            let timestamp = (new Date()).getTime();
-            succ({ coords, timestamp });
-          }, 0);
-        },
-        watchPosition: function(succ, err) {
-          return setInterval(() => {
-            this.getCurrentPosition(succ, err);
-          }, 1000); // Set the watchInterval to 1000ms (1 second)
-        },
-        clearWatch: function(id) {
-          clearInterval(id);
+  function generateRandomLocation() {
+    return {
+      latitude: randomBetween(RANDOM_BOUNDS.minLatitude, RANDOM_BOUNDS.maxLatitude),
+      longitude: randomBetween(RANDOM_BOUNDS.minLongitude, RANDOM_BOUNDS.maxLongitude),
+      accuracy: randomBetween(8, 35),
+      altitude: null,
+      altitudeAccuracy: null,
+      heading: null,
+      speed: null
+    };
+  }
+
+  function getSiteConfig() {
+    const settings = readSettings();
+    let config = settings[currentDomain];
+
+    if (!config || !['real', 'random', 'fixed'].includes(config.mode)) {
+      config = {
+        mode: 'random',
+        location: generateRandomLocation()
+      };
+      settings[currentDomain] = config;
+      writeSettings(settings);
+      return config;
+    }
+
+    if (config.mode === 'random' && !isValidLocation(config.location)) {
+      config.location = generateRandomLocation();
+      settings[currentDomain] = config;
+      writeSettings(settings);
+    }
+
+    if (config.mode === 'fixed' && !isValidLocation(config.location)) {
+      config = {
+        mode: 'random',
+        location: generateRandomLocation()
+      };
+      settings[currentDomain] = config;
+      writeSettings(settings);
+    }
+
+    return config;
+  }
+
+  function setSiteConfig(config) {
+    const settings = readSettings();
+    settings[currentDomain] = config;
+    writeSettings(settings);
+  }
+
+  function reloadPage() {
+    pageWindow.location.reload();
+  }
+
+  function useRealLocation() {
+    setSiteConfig({ mode: 'real' });
+    reloadPage();
+  }
+
+  function useRandomLocation() {
+    setSiteConfig({
+      mode: 'random',
+      location: generateRandomLocation()
+    });
+    reloadPage();
+  }
+
+  function parseInputNumber(value) {
+    if (typeof value !== 'string') {
+      return NaN;
+    }
+
+    return Number(value.trim().replace(',', '.'));
+  }
+
+  function setManualLocation() {
+    const currentConfig = getSiteConfig();
+    const currentLocation = currentConfig.location || {};
+
+    const latitudeText = pageWindow.prompt(
+      'Широта (-90 … 90):',
+      isFiniteNumber(currentLocation.latitude) ? String(currentLocation.latitude) : ''
+    );
+
+    if (latitudeText === null) {
+      return;
+    }
+
+    const longitudeText = pageWindow.prompt(
+      'Долгота (-180 … 180):',
+      isFiniteNumber(currentLocation.longitude) ? String(currentLocation.longitude) : ''
+    );
+
+    if (longitudeText === null) {
+      return;
+    }
+
+    const accuracyText = pageWindow.prompt(
+      'Точность в метрах (> 0):',
+      isFiniteNumber(currentLocation.accuracy) ? String(currentLocation.accuracy) : '20'
+    );
+
+    if (accuracyText === null) {
+      return;
+    }
+
+    const latitude = parseInputNumber(latitudeText);
+    const longitude = parseInputNumber(longitudeText);
+    const accuracy = parseInputNumber(accuracyText);
+
+    if (
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180 ||
+      !Number.isFinite(accuracy) ||
+      accuracy <= 0
+    ) {
+      pageWindow.alert('Некорректные координаты или точность.');
+      return;
+    }
+
+    setSiteConfig({
+      mode: 'fixed',
+      location: {
+        latitude,
+        longitude,
+        accuracy,
+        altitude: null,
+        altitudeAccuracy: null,
+        heading: null,
+        speed: null
+      }
+    });
+
+    reloadPage();
+  }
+
+  function createPosition(location) {
+    const normalized = normalizeLocation(location);
+
+    const coords = Object.freeze({
+      latitude: normalized.latitude,
+      longitude: normalized.longitude,
+      accuracy: normalized.accuracy,
+      altitude: normalized.altitude,
+      altitudeAccuracy: normalized.altitudeAccuracy,
+      heading: normalized.heading,
+      speed: normalized.speed
+    });
+
+    return Object.freeze({
+      coords,
+      timestamp: Date.now()
+    });
+  }
+
+  function createMockGeolocation(location) {
+    const watches = new Map();
+    let nextWatchId = 1;
+
+    function getCurrentPosition(success, error, options) {
+      if (typeof success !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'getCurrentPosition' on 'Geolocation': parameter 1 is not of type 'Function'."
+        );
+      }
+
+      pageWindow.setTimeout(() => {
+        success(createPosition(location));
+      }, 0);
+    }
+
+    function watchPosition(success, error, options) {
+      if (typeof success !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'watchPosition' on 'Geolocation': parameter 1 is not of type 'Function'."
+        );
+      }
+
+      const watchId = nextWatchId++;
+
+      const emit = () => {
+        try {
+          success(createPosition(location));
+        } catch (callbackError) {
+          pageWindow.console.error('[Menu Fake GPS] watchPosition callback error:', callbackError);
         }
       };
 
-      // Override the original navigator.geolocation with the mock object
-      Object.defineProperty(navigator, 'geolocation', {
+      emit();
+
+      const intervalId = pageWindow.setInterval(emit, 1000);
+      watches.set(watchId, intervalId);
+
+      return watchId;
+    }
+
+    function clearWatch(watchId) {
+      const intervalId = watches.get(watchId);
+
+      if (intervalId !== undefined) {
+        pageWindow.clearInterval(intervalId);
+        watches.delete(watchId);
+      }
+    }
+
+    return Object.freeze({
+      getCurrentPosition,
+      watchPosition,
+      clearWatch
+    });
+  }
+
+  function installMockGeolocation(location) {
+    const mockGeolocation = createMockGeolocation(location);
+
+    try {
+      Object.defineProperty(pageNavigator, 'geolocation', {
+        configurable: true,
+        enumerable: true,
         value: mockGeolocation
       });
+      return;
+    } catch (error) {
+      // Some browsers expose geolocation only through Navigator.prototype.
+    }
+
+    const navigatorPrototype = Object.getPrototypeOf(pageNavigator);
+
+    try {
+      Object.defineProperty(navigatorPrototype, 'geolocation', {
+        configurable: true,
+        enumerable: true,
+        get: () => mockGeolocation
+      });
+    } catch (error) {
+      pageWindow.console.error('[Menu Fake GPS] Failed to override navigator.geolocation:', error);
     }
   }
 
-  // Функция для добавления текущей страницы в match скрипта
-  function addCurrentPageToMatch() {
-      removeCurrentSiteFromStorage;
-    let currentPageUrl = window.location.href;
-    let currentPageDomain = getDomainFromUrl(currentPageUrl);
-    let existingMatch = GM_getValue('myScriptMatch', '');
+  function registerMenu(config) {
+    const realPrefix = config.mode === 'real' ? '✓ ' : '';
+    const randomPrefix = config.mode === 'random' ? '✓ ' : '';
+    const fixedPrefix = config.mode === 'fixed' ? '✓ ' : '';
 
-    if (!existingMatch.includes(currentPageDomain)) {
-      let newMatch = existingMatch ? existingMatch + ',' + currentPageDomain : currentPageDomain;
-      GM_setValue('myScriptMatch', newMatch);
-      //alert('Домен текущей страницы добавлен в хранилище скрипта.');
-    } else {
-      //alert('Домен текущей страницы уже присутствует в хранилище скрипта.');
-    }
+    GM_registerMenuCommand(realPrefix + 'Использовать реальное местоположение', useRealLocation);
+    GM_registerMenuCommand(randomPrefix + 'Использовать случайные координаты', useRandomLocation);
+    GM_registerMenuCommand(fixedPrefix + 'Задать координаты вручную…', setManualLocation);
   }
 
-  // Функция для добавления текущей страницы в список исключений
-  function addCurrentPageToExclusions() {
-      removeCurrentSiteFromStorage;
-    let currentPageUrl = window.location.href;
-    let currentPageDomain = getDomainFromUrl(currentPageUrl);
-    let existingExclusions = GM_getValue('myScriptExclusions', '');
+  migrateLegacyStorage();
 
-    if (!existingExclusions.includes(currentPageDomain)) {
-      let newExclusions = existingExclusions ? existingExclusions + ',' + currentPageDomain : currentPageDomain;
-      GM_setValue('myScriptExclusions', newExclusions);
-      alert('Домен текущей страницы добавлен в список исключений. Теперь для него не будет использоваться фиктивное местоположение.');
-      // Удаляем текущий домен из списка myScriptMatch, если он там есть
-      let existingMatch = GM_getValue('myScriptMatch', '');
-      if (existingMatch.includes(currentPageDomain)) {
-        existingMatch = existingMatch.replace(currentPageDomain, '');
-        existingMatch = existingMatch.replace(',,', ','); // Удаляем лишние запятые, если они возникли после удаления
-        if (existingMatch.startsWith(',')) {
-          existingMatch = existingMatch.substring(1); // Удаляем запятую в начале, если она возникла после удаления
-        }
-        GM_setValue('myScriptMatch', existingMatch);
-      }
-    } else {
-      alert('Домен текущей страницы уже присутствует в списке исключений.');
-    }
+  const config = getSiteConfig();
+  registerMenu(config);
+
+  if (config.mode !== 'real') {
+    installMockGeolocation(config.location);
   }
-
-  // Функция для удаления текущего сайта из хранилища
-function removeCurrentSiteFromStorage() {
-  let currentPageUrl = window.location.href;
-  let currentPageDomain = getDomainFromUrl(currentPageUrl);
-
-  // Удаляем текущий домен из списка myScriptMatch, если он там есть
-  let existingMatch = GM_getValue('myScriptMatch', '');
-  let matchArray = existingMatch.split(',');
-  matchArray = matchArray.filter(domain => domain !== currentPageDomain);
-  GM_setValue('myScriptMatch', matchArray.join(','));
-
-  // Удаляем текущий домен из списка myScriptExclusions, если он там есть
-  let existingExclusions = GM_getValue('myScriptExclusions', '');
-  let exclusionArray = existingExclusions.split(',');
-  exclusionArray = exclusionArray.filter(domain => domain !== currentPageDomain);
-  GM_setValue('myScriptExclusions', exclusionArray.join(','));
-
-  GM_deleteValue(currentPageDomain);
-  //alert('Местоположение для текущего сайта удалено из хранилища.');
-}
-
-
-  // Функция для сохранения выбранного местоположения для текущего сайта
-  function saveLocationForCurrentSite(location) {
-    removeCurrentSiteFromStorage();
-    addCurrentPageToMatch();
-    let currentPageUrl = window.location.href;
-    let currentPageDomain = getDomainFromUrl(currentPageUrl);
-    GM_setValue(currentPageDomain, location);
-    alert('Местоположение сохранено для текущего сайта.');
-  }
-
-  // Список готовых пресетов геопозиций
-  var presets = {
-    "Минск Песочница": {
-      latitude: 53.915525,
-      longitude: 27.568870,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    },
-    "Минск Троицкого/Сторожовская": {
-      latitude: 53.912972,
-      longitude: 27.555453,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    },
-    "Минск Галерея": {
-      latitude: 53.908512,
-      longitude: 27.548552,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    },
-    "Минск Мир": {
-      latitude: 53.869199,
-      longitude: 27.535535,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    },
-    "Минск Мир 2": {
-      latitude: 53.867464,
-      longitude: 27.541219,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    },
-    "ЖК парк Челюскинцев": {
-      latitude: 53.923994,
-      longitude: 27.624810,
-      accuracy: 0.009469,
-      altitude: 214,
-      altitudeAccuracy: 1,
-      heading: 135,
-      speed: 0
-    }
-    // Добавьте другие пресеты по аналогии, если нужно
-  };
-
-  // Добавляем кнопку в меню Tampermonkey для добавления текущей страницы в match скрипта
-  //GM_registerMenuCommand('Добавить текущую страницу в правила', addCurrentPageToMatch);
-
-  // Добавляем кнопку в меню Tampermonkey для добавления текущего сайта в список исключений
-  GM_registerMenuCommand('Использовать реальное местоположение', addCurrentPageToExclusions);
-
-  // Добавляем кнопку в меню Tampermonkey для удаления текущего сайта из хранилища
-  GM_registerMenuCommand('Использовать рандомные координаты', removeCurrentSiteFromStorage);
-
-  // Добавляем список пресетов геопозиций в меню Tampermonkey
-  Object.keys(presets).forEach(presetName => {
-    GM_registerMenuCommand(presetName, function() {
-      saveLocationForCurrentSite(presets[presetName]);
-    });
-  });
-
-  // Проверяем, нужно ли выполнять скрипт на текущем сайте
-  checkMatch();
-
 })();
