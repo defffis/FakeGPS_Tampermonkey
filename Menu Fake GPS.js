@@ -100,25 +100,38 @@
     );
   }
 
+  function toNullableNumber(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   function normalizeLocation(location) {
     const accuracy = Number(location.accuracy);
+    const altitude = toNullableNumber(location.altitude);
+    const altitudeAccuracy = toNullableNumber(location.altitudeAccuracy);
+    const heading = toNullableNumber(location.heading);
+    const speed = toNullableNumber(location.speed);
 
     return {
       latitude: Number(location.latitude),
       longitude: Number(location.longitude),
       accuracy: Number.isFinite(accuracy) && accuracy > 0 ? Math.max(1, accuracy) : 20,
-      altitude: Number.isFinite(Number(location.altitude)) ? Number(location.altitude) : null,
+      altitude,
       altitudeAccuracy:
-        Number.isFinite(Number(location.altitudeAccuracy)) && location.altitude !== null
-          ? Math.max(0, Number(location.altitudeAccuracy))
+        altitude !== null && altitudeAccuracy !== null
+          ? Math.max(0, altitudeAccuracy)
           : null,
       heading:
-        Number.isFinite(Number(location.heading))
-          ? ((Number(location.heading) % 360) + 360) % 360
+        heading !== null
+          ? ((heading % 360) + 360) % 360
           : null,
       speed:
-        Number.isFinite(Number(location.speed)) && Number(location.speed) >= 0
-          ? Number(location.speed)
+        speed !== null && speed >= 0
+          ? speed
           : null
     };
   }
